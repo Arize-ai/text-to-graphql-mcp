@@ -5,6 +5,7 @@ Query validation tool for the Text-to-GraphQL MCP Server.
 from typing import Dict, Any, Optional, List, Union
 from ..logger import logger
 from ..types import AgentState
+from ..schema_cache import schema_cache
 
 import json
 
@@ -53,17 +54,27 @@ async def query_validation(state: AgentState) -> AgentState:
             state["tool_error"] = "No query provided for validation"
             return state
             
-        if not intent or not schema:
-            logger.json("WARNING", "Missing intent or schema for validation", {
-                "tool": "query_validation",
-                "error": "missing_prerequisites",
-                "missing_fields": [
-                    field for field in ["intent", "schema"] 
-                    if not state.get(field)
-                ]
-            })
-            state["tool_error"] = "Missing intent or schema for query validation"
-            return state
+        if schema is None:
+            # validate_graphql_query can be called before generate_graphql_query,
+            # so resolve the schema from the cache rather than depending on state
+            # left behind by an earlier call in the same process.
+            try:
+                loaded = await schema_cache.get_schema()
+                schema = loaded.schema
+                state["schema"] = schema
+                logger.json("INFO", "Loaded schema from cache for validation", {
+                    "tool": "query_validation",
+                    **loaded.describe(),
+                })
+            except Exception as e:
+                logger.json("WARNING", "No schema available for validation", {
+                    "tool": "query_validation",
+                    "error": "missing_schema",
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                })
+                state["tool_error"] = f"No GraphQL schema available for query validation: {str(e)}"
+                return state
             
         # Log the query being validated
         logger.json("INFO", "Validating GraphQL query", {

@@ -497,6 +497,10 @@ class GraphQLAgent:
             "graphql_query": result.get("query"),
             "validation_result": result.get("query_validation_result")
         }
+        # agent_controller ends the workflow on a tool error but only logged it,
+        # so the caller saw a null query with no explanation. Surface it.
+        if result.get("tool_error"):
+            response["error"] = result["tool_error"]
         
         logger.json("INFO", "Query generation completed", response)
         return response

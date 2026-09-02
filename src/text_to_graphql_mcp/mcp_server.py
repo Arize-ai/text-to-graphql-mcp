@@ -115,12 +115,14 @@ try:
     from .config import settings
     from .logger import logger
     from .error_handlers import validated
+    from .schema_cache import schema_cache
 except ImportError:
     # Handle imports when running as main module
     from agent import GraphQLAgent
     from config import settings
     from logger import logger
     from error_handlers import validated
+    from schema_cache import schema_cache
 
 
 # Initialize FastMCP server
@@ -152,9 +154,11 @@ async def generate_graphql_query(
     """
     logger.info(f"MCP: Generating query for: {query}")
     
-    # Handle history ID
+    # Handle history ID. A counter over query_history is read before the await
+    # below and written after it, so concurrent calls would collide and silently
+    # overwrite each other's history entry.
     if not history_id:
-        history_id = str(len(query_history) + 1)
+        history_id = str(uuid4())
     
     if history_id not in session_id_map:
         session_id_map[history_id] = str(uuid4())
@@ -175,6 +179,8 @@ async def generate_graphql_query(
         "graphql_query": result.get("graphql_query"),
         "validation_result": result.get("validation_result")
     }
+    if result.get("error"):
+        response["error"] = result["error"]
     
     return json.dumps(response, indent=2)
 
@@ -202,7 +208,13 @@ async def validate_graphql_query(
     """
     logger.info(f"MCP: Validating query: {graphql_query[:50]}...")
     
-    result = await agent.validate_query(graphql_query, natural_language_query or "")
+    if history_id and history_id not in session_id_map:
+        session_id_map[history_id] = str(uuid4())
+    session_id = session_id_map.get(history_id or "", "") or str(uuid4())
+
+    result = await agent.validate_query(
+        graphql_query, natural_language_query or "", session_id
+    )
     
     # Update history
     if history_id and history_id in query_history:
@@ -210,7 +222,7 @@ async def validate_graphql_query(
         query_history[history_id]["validation_result"] = result
     else:
         # Create new history entry
-        history_id = str(len(query_history) + 1) if not history_id else history_id
+        history_id = history_id or str(uuid4())
         query_history[history_id] = {
             "id": history_id,
             "natural_language_query": natural_language_query or "",
@@ -277,7 +289,7 @@ async def execute_graphql_query(
         query_history[history_id]["visualization_result"] = visualization_result
     else:
         # Create new history entry
-        history_id = str(len(query_history) + 1) if not history_id else history_id
+        history_id = history_id or str(uuid4())
         query_history[history_id] = {
             "id": history_id,
             "natural_language_query": natural_language_query or "",
@@ -328,6 +340,68 @@ async def get_query_examples() -> str:
     
     response = {"examples": examples}
     
+    return json.dumps(response, indent=2)
+
+
+@mcp.tool()
+@validated()
+async def refresh_schema() -> str:
+    """Force an immediate re-introspection of the GraphQL schema
+
+    ESCAPE HATCH - do not call this before normal queries. The schema is cached
+    and re-introspected automatically once its TTL expires
+    (SCHEMA_CACHE_TTL_SECONDS, default 3600), so generate_graphql_query already
+    picks up schema changes on its own. Reach for this only when you know the
+    schema just changed and cannot wait for the TTL, or when diagnosing a
+    suspected stale-schema problem.
+
+    Bypasses the TTL and validates the introspected schema before storing it. If
+    the refresh fails, the previously cached schema is left untouched and stays
+    in use.
+
+    Returns:
+        JSON string reporting the refresh outcome, including whether the schema changed
+    """
+    logger.info("MCP: Forced schema refresh requested")
+
+    try:
+        report = await schema_cache.refresh()
+    except Exception as e:
+        retained = schema_cache.current()
+        response = {
+            "refreshed": False,
+            "endpoint": schema_cache.endpoint,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "message": (
+                "Schema refresh failed. The previously cached schema was retained "
+                "and remains in use."
+                if retained is not None
+                else "Schema refresh failed and no cached schema is available."
+            ),
+        }
+        if retained is not None:
+            response["current_hash"] = retained.schema_hash
+            response["cache_age"] = round(retained.cache_age, 3)
+        logger.json("ERROR", "Forced schema refresh failed", response)
+        return json.dumps(response, indent=2)
+
+    changed = report.get("changed")
+    response = {
+        "refreshed": True,
+        "changed": changed,
+        "previous_hash": report.get("previous_hash"),
+        "current_hash": report.get("schema_hash"),
+        "source": report.get("source"),
+        "endpoint": report.get("endpoint"),
+        "refreshed_at": report.get("refreshed_at"),
+        "message": (
+            "Schema refreshed successfully. Changed: "
+            + ("yes" if changed else "no")
+        ),
+    }
+    logger.json("INFO", "Forced schema refresh completed", response)
+
     return json.dumps(response, indent=2)
 
 

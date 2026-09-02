@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     GRAPHQL_HEADERS: str = os.getenv("GRAPHQL_HEADERS", "{}")
     GRAPHQL_AUTH_TYPE: str = os.getenv("GRAPHQL_AUTH_TYPE", "bearer")  # bearer, apikey, or custom
     
+    # Schema cache settings
+    # TTL after which the cached schema is re-introspected. The check is cheap and
+    # runs per schema-dependent call; live introspection happens only when stale.
+    SCHEMA_CACHE_TTL_SECONDS: int = int(os.getenv("SCHEMA_CACHE_TTL_SECONDS", "3600"))
+    # Override the schema cache location (containers, read-only HOME, custom deploys).
+    # Empty means $XDG_CACHE_HOME/text-to-graphql-mcp/schemas, else ~/.cache/...
+    SCHEMA_CACHE_DIR: str = os.getenv("SCHEMA_CACHE_DIR", "")
+    
     # Legacy support for Arize (backward compatibility)
     ARIZE_DEVELOPER_API_KEY: str = os.getenv("ARIZE_DEVELOPER_API_KEY", "")
     

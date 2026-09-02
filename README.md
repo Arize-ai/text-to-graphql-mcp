@@ -13,13 +13,13 @@ The Text-to-GraphQL MCP Server converts natural language descriptions into valid
 ## ✨ Features
 
 - **Natural Language to GraphQL**: Convert plain English queries to valid GraphQL
-- **Schema Management**: Load and introspect GraphQL schemas automatically
+- **Schema Management**: Introspects your GraphQL schema automatically and refreshes it on a TTL
 - **Query Validation**: Validate generated queries against loaded schemas
 - **Query Execution**: Execute queries against GraphQL endpoints with authentication
 - **Query History**: Track and manage query history across sessions
 - **MCP Protocol**: Full compatibility with Claude Desktop, Cursor, and other MCP clients
 - **Error Handling**: Graceful error handling with detailed debugging information
-- **Caching**: Built-in caching for schemas and frequently used queries
+- **Schema Caching**: Schemas are cached in memory and on disk with a configurable TTL, so a long-running server picks up schema changes on its own and a restart does not force a re-introspection
 
 ## 🛠 Installation
 
@@ -231,6 +231,16 @@ Execute GraphQL queries and return formatted results.
 #### `get_query_history`
 Retrieve the history of all queries in the current session.
 
+#### `refresh_schema`
+Force an immediate re-introspection of the GraphQL schema.
+
+This is an escape hatch. The schema is cached and refreshed automatically once
+`SCHEMA_CACHE_TTL_SECONDS` elapses, so you do not need to call this before
+normal queries. Reach for it when you know the schema just changed and cannot
+wait for the TTL, or when diagnosing a suspected stale-schema problem. It
+reports whether the schema actually changed, and if the refresh fails the
+previously cached schema is retained and stays in use.
+
 #### `get_query_examples`
 Get example queries to understand the system's capabilities.
 
@@ -428,7 +438,7 @@ Add to your Claude Desktop configuration:
 The system uses a multi-agent architecture built with LangGraph:
 
 1. **Intent Recognition**: Understands what the user wants to accomplish
-2. **Schema Management**: Loads and manages GraphQL schema information
+2. **Schema Management**: Resolves the GraphQL schema from cache or live introspection
 3. **Query Construction**: Builds GraphQL queries from natural language
 4. **Query Validation**: Ensures queries are valid against the schema
 5. **Query Execution**: Executes queries against the GraphQL endpoint
@@ -450,6 +460,8 @@ The system uses a multi-agent architecture built with LangGraph:
 | `API_HOST` | Server host address | `127.0.0.1` |
 | `API_PORT` | Server port | `8000` |
 | `RECURSION_LIMIT` | Max recursion for agent workflow | `10` |
+| `SCHEMA_CACHE_TTL_SECONDS` | How long a cached schema is served before re-introspecting | `3600` |
+| `SCHEMA_CACHE_DIR` | Override the schema cache directory | `$XDG_CACHE_HOME/text-to-graphql-mcp/schemas`, else `~/.cache/text-to-graphql-mcp/schemas` |
 
 #### Authentication Types
 
@@ -539,6 +551,7 @@ text-to-graphql-mcp/
 │   ├── mcp_server.py            # MCP server implementation
 │   ├── agent.py                 # LangGraph agent logic
 │   ├── config.py                # Configuration management
+│   ├── schema_cache.py          # Schema TTL cache, disk cache and refresh
 │   ├── logger.py                # Logging utilities
 │   ├── tools/                   # Agent tools
 │   └── ...
@@ -580,6 +593,18 @@ This project is licensed under the Elastic License 2.0 (ELv2) - see the [LICENSE
 **"Schema introspection failed"**
 - Ensure the GraphQL endpoint supports introspection
 - Check authentication headers if required
+- If a previously cached schema exists it is still used, so queries keep working
+  on the last known-good schema. The log line says which source was used
+  (`memory`, `fresh_cache`, `live` or `stale_cache`).
+
+**"The server is using an out-of-date schema"**
+- Schemas refresh automatically once `SCHEMA_CACHE_TTL_SECONDS` (default 3600)
+  elapses. Lower it if you need changes picked up sooner.
+- To refresh immediately, call the `refresh_schema` tool. It reports the
+  previous and current schema hashes so you can confirm the change landed.
+- To inspect or clear the cache by hand, look in `SCHEMA_CACHE_DIR` (by default
+  `~/.cache/text-to-graphql-mcp/schemas`). Cache files are named by endpoint
+  host plus a hash of the full endpoint URL, and contain no credentials.
 
 ## 🔗 Links
 

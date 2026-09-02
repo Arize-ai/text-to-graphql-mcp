@@ -34,8 +34,9 @@ class TestMCPServer:
                 "validation_result": {"is_valid": True}
             }
             
-            # Call the actual MCP tool function using .fn
-            result = await generate_graphql_query.fn("Get all users")
+            # fastmcp's @mcp.tool() returns the undecorated function, so the
+            # tool is callable directly (it no longer exposes a .fn attribute).
+            result = await generate_graphql_query("Get all users")
             result_data = json.loads(result)
             
             assert "graphql_query" in result_data
@@ -47,7 +48,7 @@ class TestMCPServer:
     async def test_generate_graphql_query_empty_query(self):
         """Test error handling for empty query."""
         # The function should return an error response, not raise an exception
-        result = await generate_graphql_query.fn("")
+        result = await generate_graphql_query("")
         result_data = json.loads(result)
         
         assert "error" in result_data
@@ -64,7 +65,7 @@ class TestMCPServer:
                 "errors": []
             }
             
-            result = await validate_graphql_query.fn("query { users { id } }")
+            result = await validate_graphql_query("query { users { id } }")
             result_data = json.loads(result)
             
             assert "validation_result" in result_data
@@ -86,7 +87,7 @@ class TestMCPServer:
                     "recommendations": []
                 }
                 
-                result = await execute_graphql_query.fn("query { users { id name } }")
+                result = await execute_graphql_query("query { users { id name } }")
                 result_data = json.loads(result)
                 
                 assert "execution_result" in result_data
