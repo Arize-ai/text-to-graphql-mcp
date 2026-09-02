@@ -10,7 +10,7 @@ from graphql.type import (
     GraphQLSchema
 )
 from collections import OrderedDict
-from ..logger import logger
+from ..logger import logger, redact_url
 from ..config import settings
 from gql.transport.httpx import HTTPXTransport
 from gql import Client as GQLClient, gql
@@ -214,7 +214,7 @@ def execute_graphql_query(endpoint_url, query, headers=None, variables=None, ope
     """        
     
     try:
-        logger.info(f"Executing GraphQL query against: {endpoint_url}")
+        logger.info(f"Executing GraphQL query against: {redact_url(endpoint_url)}")
         
         # Use configured headers if none provided
         if headers is None:
@@ -228,7 +228,7 @@ def execute_graphql_query(endpoint_url, query, headers=None, variables=None, ope
         # Use configured endpoint if not provided or if provided endpoint is empty
         if not endpoint_url or endpoint_url.strip() == "":
             endpoint_url = settings.GRAPHQL_ENDPOINT
-            logger.info(f"Using configured GraphQL endpoint: {endpoint_url}")
+            logger.info(f"Using configured GraphQL endpoint: {redact_url(endpoint_url)}")
         
         transport_kwargs = {"url": endpoint_url, "headers": request_headers}
         if timeout is not None:

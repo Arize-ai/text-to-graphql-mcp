@@ -113,14 +113,14 @@ from fastmcp import FastMCP
 try:
     from .agent import GraphQLAgent
     from .config import settings
-    from .logger import logger
+    from .logger import logger, scrub_secrets
     from .error_handlers import validated
     from .schema_cache import schema_cache
 except ImportError:
     # Handle imports when running as main module
     from agent import GraphQLAgent
     from config import settings
-    from logger import logger
+    from logger import logger, scrub_secrets
     from error_handlers import validated
     from schema_cache import schema_cache
 
@@ -371,7 +371,7 @@ async def refresh_schema() -> str:
         response = {
             "refreshed": False,
             "endpoint": schema_cache.endpoint,
-            "error": str(e),
+            "error": scrub_secrets(e),
             "error_type": type(e).__name__,
             "message": (
                 "Schema refresh failed. The previously cached schema was retained "

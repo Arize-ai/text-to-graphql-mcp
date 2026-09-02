@@ -8,6 +8,7 @@ import sys
 from datetime import datetime
 from loguru import logger as loguru_logger
 import json
+from urllib.parse import urlsplit, urlunsplit
 
 # Remove default logger
 loguru_logger.remove()
@@ -95,7 +96,10 @@ def setup_logger(name="app", log_level="INFO"):
     
     # Add a special method for JSON logging
     def log_json(level, message, data, **kwargs):
-        pretty = pretty_json(data)
+        # Central choke point: library error strings routinely embed the request
+        # URL, so scrub known secrets out of every structured record rather than
+        # trying to anticipate each message shape.
+        pretty = scrub_secrets(pretty_json(data))
         if MCP_MODE:
             # No colors in MCP mode
             contextualized_logger.log(level, f"{message}\n{pretty}", **kwargs)
@@ -176,4 +180,84 @@ def setup_logger(name="app", log_level="INFO"):
     return contextualized_logger
 
 # Create a default application logger
-logger = setup_logger() 
+logger = setup_logger()
+
+
+def redact_url(url) -> str:
+    """
+    Strip credential material from a URL so it is safe to log or return.
+
+    Removes any userinfo (https://user:pass@host) plus the query string and
+    fragment, either of which can carry a token. Never raises: a URL that
+    cannot be parsed is reported as unparseable rather than echoed back.
+    """
+    text = str(url or "")
+    if not text:
+        return text
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+        if not host:
+            return "<unparseable url>"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except ValueError:
+        return "<unparseable url>"
+
+
+def _known_secrets():
+    """
+    The credential values this process actually holds.
+
+    A deny-list of real values is reliable in a way that pattern matching is
+    not: we know exactly what must never appear in output.
+    """
+    try:
+        from .config import settings
+    except Exception:
+        return ()
+
+    values = [
+        getattr(settings, "GRAPHQL_API_KEY", ""),
+        getattr(settings, "ARIZE_DEVELOPER_API_KEY", ""),
+        getattr(settings, "ARIZE_API_KEY", ""),
+        getattr(settings, "OPENAI_API_KEY", ""),
+    ]
+
+    # Anything embedded in the endpoint URL: userinfo and query values.
+    endpoint = getattr(settings, "GRAPHQL_ENDPOINT", "") or ""
+    if endpoint:
+        try:
+            parts = urlsplit(endpoint)
+            values.extend([parts.username or "", parts.password or ""])
+            if parts.query:
+                for pair in parts.query.split("&"):
+                    _, _, value = pair.partition("=")
+                    values.append(value)
+        except ValueError:
+            pass
+
+    # And anything in explicitly configured headers.
+    raw_headers = getattr(settings, "GRAPHQL_HEADERS", "") or ""
+    if raw_headers and raw_headers != "{}":
+        try:
+            parsed = json.loads(raw_headers)
+            if isinstance(parsed, dict):
+                values.extend(str(v) for v in parsed.values())
+        except (json.JSONDecodeError, TypeError):
+            values.append(raw_headers)
+
+    # Short values are too likely to appear coincidentally to be worth
+    # substituting, and are not plausible credentials.
+    return tuple({v for v in values if isinstance(v, str) and len(v) >= 8})
+
+
+def scrub_secrets(text) -> str:
+    """Replace any known credential value with a placeholder."""
+    result = str(text or "")
+    if not result:
+        return result
+    for secret in _known_secrets():
+        if secret in result:
+            result = result.replace(secret, "<redacted>")
+    return result

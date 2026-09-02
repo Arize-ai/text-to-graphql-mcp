@@ -34,7 +34,7 @@ from graphql import GraphQLSchema, build_client_schema, get_introspection_query,
 
 from .config import settings
 from .exceptions import GraphQLSchemaError
-from .logger import logger
+from .logger import logger, redact_url, scrub_secrets
 
 # Bumped whenever the on-disk envelope layout changes. Files without a matching
 # version are ignored rather than migrated -- pre-1 files were CWD-relative and
@@ -172,13 +172,17 @@ def extract_introspection(raw: Any) -> Dict[str, Any]:
             schema_source="live",
         )
     if raw.get("success") is False:
+        # Transport messages routinely embed the request URL, so scrub before
+        # this text reaches a log line or an MCP response.
+        detail = scrub_secrets(raw.get("message") or "unknown transport error")
         raise GraphQLSchemaError(
-            f"Introspection request failed: {raw.get('message') or 'unknown transport error'}",
+            f"Introspection request failed: {detail}",
             schema_source="live",
         )
     if raw.get("errors"):
         raise GraphQLSchemaError(
-            f"Introspection response carried GraphQL errors: {json.dumps(raw['errors'])[:500]}",
+            "Introspection response carried GraphQL errors: "
+            + scrub_secrets(json.dumps(raw["errors"])[:500]),
             schema_source="live",
         )
 
@@ -446,7 +450,7 @@ class SchemaCache:
             return loaded
 
         raise GraphQLSchemaError(
-            f"Live introspection failed for {endpoint}: {last_error}",
+            f"Live introspection failed for {endpoint}: {scrub_secrets(last_error)}",
             schema_source="live",
         ) from last_error
 
@@ -550,8 +554,19 @@ class SchemaCache:
 
     @property
     def endpoint(self) -> str:
-        """The configured endpoint, as used for cache identity."""
-        return self._endpoint()
+        """
+        The configured endpoint in reportable form.
+
+        Normalized where possible and credential-stripped either way, because
+        this is what refresh_schema echoes back to the client on failure.
+        """
+        raw = self._endpoint()
+        if not raw:
+            return raw
+        try:
+            return normalize_endpoint(raw)
+        except ValueError:
+            return redact_url(raw)
 
     def current(self) -> Optional[LoadedSchema]:
         """The in-memory schema, if any. Never triggers a load."""
