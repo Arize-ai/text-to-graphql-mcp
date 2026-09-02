@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # Override the schema cache location (containers, read-only HOME, custom deploys).
     # Empty means $XDG_CACHE_HOME/text-to-graphql-mcp/schemas, else ~/.cache/...
     SCHEMA_CACHE_DIR: str = os.getenv("SCHEMA_CACHE_DIR", "")
+    # Introspection runs while holding the refresh lock, so it must be bounded.
+    SCHEMA_INTROSPECTION_TIMEOUT_SECONDS: int = int(
+        os.getenv("SCHEMA_INTROSPECTION_TIMEOUT_SECONDS", "30")
+    )
     
     # Legacy support for Arize (backward compatibility)
     ARIZE_DEVELOPER_API_KEY: str = os.getenv("ARIZE_DEVELOPER_API_KEY", "")

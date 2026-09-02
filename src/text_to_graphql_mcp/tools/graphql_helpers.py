@@ -197,7 +197,7 @@ def construct_query_context(schema, query_name):
 
     return query_context
 
-def execute_graphql_query(endpoint_url, query, headers=None, variables=None, operation_name=None):
+def execute_graphql_query(endpoint_url, query, headers=None, variables=None, operation_name=None, timeout=None):
     """
     Execute a GraphQL query against a specified endpoint.
     
@@ -207,6 +207,7 @@ def execute_graphql_query(endpoint_url, query, headers=None, variables=None, ope
         headers: Optional headers for the request (e.g., authentication)
         variables: Optional variables for the GraphQL query
         operation_name: Optional operation name for the GraphQL query
+        timeout: Optional request timeout in seconds. None keeps httpx's default.
         
     Returns:
         Dict containing the response data or error information
@@ -229,10 +230,10 @@ def execute_graphql_query(endpoint_url, query, headers=None, variables=None, ope
             endpoint_url = settings.GRAPHQL_ENDPOINT
             logger.info(f"Using configured GraphQL endpoint: {endpoint_url}")
         
-        transport = HTTPXTransport(
-            url=endpoint_url,
-            headers=request_headers
-        )
+        transport_kwargs = {"url": endpoint_url, "headers": request_headers}
+        if timeout is not None:
+            transport_kwargs["timeout"] = timeout
+        transport = HTTPXTransport(**transport_kwargs)
         
         # Create GQL client with transport
         client = GQLClient(transport=transport, fetch_schema_from_transport=False)

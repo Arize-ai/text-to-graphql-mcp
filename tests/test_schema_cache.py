@@ -505,3 +505,63 @@ async def test_refresh_schema_tool_is_documented_as_an_escape_hatch():
     doc = mcp_server.refresh_schema.__doc__ or ""
     assert "ESCAPE HATCH" in doc
     assert "do not call this before normal queries" in doc.lower()
+
+
+# --- credential hygiene ------------------------------------------------------
+
+async def test_basic_auth_in_the_endpoint_never_leaves_the_request(cache_dir, transport):
+    """A https://user:pass@host/graphql config must not leak the password into
+    logs, the cache file, or the refresh_schema output."""
+    secret = "s3cr3t-password"
+    raw_url = f"https://svc:{secret}@api.example.test/graphql"
+
+    leaky = SchemaCache(
+        cache_dir=cache_dir, transport=transport, ttl_seconds=3600, endpoint=raw_url
+    )
+    loaded = await leaky.get_schema()
+
+    # The request itself still goes to the full URL ...
+    assert transport.calls == 1
+    # ... but nothing reported or persisted carries the credential.
+    assert secret not in loaded.endpoint
+    assert secret not in json.dumps(loaded.describe())
+    assert loaded.endpoint == "https://api.example.test/graphql"
+
+    report = await leaky.refresh()
+    assert secret not in json.dumps(report)
+
+    cache_file = leaky.cache_path(raw_url)
+    assert secret not in cache_file.read_text()
+    assert secret not in cache_file.name
+
+
+async def test_unparseable_endpoint_raises_instead_of_silently_not_caching(
+    cache_dir, transport
+):
+    broken = SchemaCache(cache_dir=cache_dir, transport=transport, endpoint="not-a-url")
+
+    with pytest.raises(GraphQLSchemaError) as exc:
+        await broken.get_schema()
+
+    assert "not a usable URL" in str(exc.value)
+    assert transport.calls == 0
+
+
+async def test_introspection_request_is_time_bounded(monkeypatch):
+    """Introspection holds the refresh lock, so the request must be bounded."""
+    import src.text_to_graphql_mcp.schema_cache as sc
+
+    seen = {}
+
+    def fake_execute(endpoint_url, query, headers, timeout=None):
+        seen["timeout"] = timeout
+        return {"success": True, "data": introspect_locally(SDL_V1, query)}
+
+    import src.text_to_graphql_mcp.tools.graphql_helpers as helpers
+
+    monkeypatch.setattr(helpers, "execute_graphql_query", fake_execute)
+
+    sc._default_transport("https://example.test/graphql", "query { __typename }", {})
+
+    assert isinstance(seen["timeout"], int)
+    assert seen["timeout"] > 0

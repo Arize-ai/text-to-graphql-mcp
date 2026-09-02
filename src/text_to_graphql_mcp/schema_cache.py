@@ -58,6 +58,9 @@ class LoadedSchema:
 
     schema: GraphQLSchema
     source: str
+    # Always the *normalized* endpoint: userinfo is stripped, so a
+    # https://user:pass@host/graphql configuration cannot leak a password into
+    # logs or into the refresh_schema tool's output.
     endpoint: str
     refreshed_at: float
     schema_hash: str
@@ -145,7 +148,11 @@ def _default_transport(endpoint_url: str, query: str, headers: Dict[str, str]) -
     # this module, so a top-level import would be circular.
     from .tools.graphql_helpers import execute_graphql_query
 
-    return execute_graphql_query(endpoint_url, query, headers)
+    # Bounded, because introspection runs while holding the refresh lock: an
+    # endpoint that accepts the connection and never answers would otherwise
+    # block every schema-dependent request for the life of the process.
+    timeout = max(1, int(getattr(settings, "SCHEMA_INTROSPECTION_TIMEOUT_SECONDS", 30)))
+    return execute_graphql_query(endpoint_url, query, headers, timeout=timeout)
 
 
 def extract_introspection(raw: Any) -> Dict[str, Any]:
@@ -406,7 +413,7 @@ class SchemaCache:
         }
         return [base, {**base, "descriptions": False}]
 
-    async def _introspect(self, endpoint: str) -> LoadedSchema:
+    async def _introspect(self, request_url: str, endpoint: str) -> LoadedSchema:
         headers = settings.get_graphql_headers()
         last_error: Optional[Exception] = None
 
@@ -414,7 +421,7 @@ class SchemaCache:
             query = get_introspection_query(**variant)
             try:
                 # The gql transport is synchronous; keep it off the event loop.
-                raw = await asyncio.to_thread(self._transport, endpoint, query, headers)
+                raw = await asyncio.to_thread(self._transport, request_url, query, headers)
                 payload = extract_introspection(raw)
                 schema = build_validated_schema(payload, SOURCE_LIVE)
             except Exception as exc:
@@ -471,12 +478,21 @@ class SchemaCache:
         return report
 
     async def _resolve(self, force: bool, allow_stale: bool) -> LoadedSchema:
-        endpoint = self._endpoint()
-        if not endpoint:
+        request_url = self._endpoint()
+        if not request_url:
             raise GraphQLSchemaError(
                 "No GraphQL endpoint configured. Set GRAPHQL_ENDPOINT to introspect a schema.",
                 schema_source="config",
             )
+        # The raw URL is what we request (it may carry a path, port or
+        # userinfo); the normalized form is what we report and key the cache on.
+        try:
+            endpoint = normalize_endpoint(request_url)
+        except ValueError as exc:
+            raise GraphQLSchemaError(
+                f"GRAPHQL_ENDPOINT is not a usable URL: {exc}",
+                schema_source="config",
+            ) from exc
 
         if not force:
             hit = self._memory_hit(endpoint)
@@ -501,7 +517,7 @@ class SchemaCache:
                     return loaded
 
             try:
-                loaded = await self._introspect(endpoint)
+                loaded = await self._introspect(request_url, endpoint)
             except Exception as live_error:
                 if allow_stale and envelope:
                     stale = self._from_envelope(envelope, endpoint, SOURCE_STALE_CACHE)
